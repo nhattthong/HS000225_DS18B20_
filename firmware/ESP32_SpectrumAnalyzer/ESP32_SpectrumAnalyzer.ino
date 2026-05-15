@@ -94,8 +94,7 @@ uint8_t  activeBand  = 0;    // 0=both  1=2.4GHz only  2=5.8GHz only
 bool     nrf24OK     = false;
 bool     rx5808OK    = true;  // RX5808 has no digital "ready" signal
 
-// Scan result buffers (per-channel RSSI 0-100)
-uint8_t  nrf24Rssi[NRF24_NUM_CHANNELS]   = {};
+// 5.8 GHz scan result buffer (per-channel RSSI 0-100, band-ordered)
 uint8_t  rx5808Rssi[RX5808_NUM_CHANNELS] = {};
 
 // ── Helpers ───────────────────────────────────────────────────
@@ -192,10 +191,12 @@ void connectSTA() {
         isAPMode  = false;
         currentIP = WiFi.localIP().toString();
         Serial.printf("[WiFi] Connected  IP=%s\n", currentIP.c_str());
+        prefs.putBool("preferSTA", true);   // remember STA mode across reboots
         sendStatus(nullptr);
         sendMsg(nullptr, "Connected!", true);
     } else {
         Serial.println("[WiFi] STA connect failed – reverting to AP");
+        prefs.putBool("preferSTA", false);  // clear STA preference on failure
         sendMsg(nullptr, "Connection failed – reverting to AP", false);
         setupAP();
     }
@@ -219,10 +220,14 @@ void onWSEvent(AsyncWebSocket *server,
         // Only handle complete, single-frame text messages
         if (info->opcode != WS_TEXT || !info->final || info->index != 0) return;
 
-        // Null-terminate and parse
-        data[len] = '\0';
+        // Copy to null-terminated stack buffer (ESPAsyncWebServer does not
+        // guarantee space for a terminator, so we never write past data[len-1]).
+        char buf[257];
+        size_t copyLen = (len < sizeof(buf) - 1) ? len : sizeof(buf) - 1;
+        memcpy(buf, data, copyLen);
+        buf[copyLen] = '\0';
         StaticJsonDocument<256> doc;
-        if (deserializeJson(doc, (char *)data) != DeserializationError::Ok) return;
+        if (deserializeJson(doc, buf) != DeserializationError::Ok) return;
 
         const char *cmd = doc[F("c")] | "";
 
@@ -327,7 +332,7 @@ void setup() {
 
     // ── RX5808 init ────────────────────────────────────────────
     analogReadResolution(12);   // ESP32-C3: 12-bit ADC
-    analogSetAttenuation(ADC_11db);   // full-scale ~3.3 V
+    analogSetPinAttenuation(PIN_RX5808_RSSI, ADC_11db);   // full-scale ~3.3 V
     rx5808.begin();
     Serial.println(F("[RX5808] OK"));
 
